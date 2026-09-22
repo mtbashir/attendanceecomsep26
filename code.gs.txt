@@ -1,0 +1,171 @@
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('Index')
+      .setTitle('Class Sign-In')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function getRosterData() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Roster');
+    if (!sheet) return { sections: [], rollNos: [], names: [], totalStudents: 0, timetable: [] };
+    
+    var data = sheet.getDataRange().getValues();
+    var sectionsSet = {}, rollNosSet = {}, namesSet = {};
+    var studentCount = 0;
+    var timetable = [];
+    
+    for (var i = 1; i < data.length; i++) {
+      var section = data[i][0] ? data[i][0].toString().trim() : "";
+      var rollNo = data[i][1] ? data[i][1].toString().trim() : "";
+      var name = data[i][2] ? data[i][2].toString().trim() : "";
+      
+      if (rollNo && name) {
+        studentCount++;
+        if (section) sectionsSet[section] = true;
+        rollNosSet[rollNo] = true;
+        namesSet[name] = true;
+      }
+
+      // Read Timetable & Rules from Cols E:K (Indices 4 to 10)
+      var sessionNo = data[i][4];
+      if (sessionNo !== "" && sessionNo !== undefined) {
+        var sessDate = data[i][6] instanceof Date ? Utilities.formatDate(data[i][6], Session.getScriptTimeZone(), "yyyy-MM-dd") : data[i][6];
+        timetable.push({
+          sessionNo: sessionNo,
+          day: data[i][5],
+          date: sessDate,
+          section: data[i][7] ? data[i][7].toString().trim() : "",
+          startTime: data[i][8] ? data[i][8].toString().trim() : "",
+          endTime: data[i][9] ? data[i][9].toString().trim() : "",
+          ruleConfig: data[i][10]
+        });
+      }
+    }
+    
+    return {
+      sections: Object.keys(sectionsSet),
+      rollNos: Object.keys(rollNosSet),
+      names: Object.keys(namesSet),
+      totalStudents: studentCount,
+      timetable: timetable
+    };
+  } catch(e) {
+    return { sections: [], rollNos: [], names: [], totalStudents: 0, timetable: [] };
+  }
+}
+
+function recordAttendance(payload) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sheet2');
+  if (!sheet) return "ERROR: Tab named 'Sheet2' not found.";
+
+  var rosterSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Roster');
+  var syncTimestamp = new Date();
+  var photoUrl = payload.eventType === "PHOTO_UPLOAD" ? "PROCESSING" : "NO_PHOTO";
+  
+  if (payload.imageBase64 && payload.imageBase64 !== "") {
+    var folderName = "Classroom Attendance Photos";
+    var folders = DriveApp.getFoldersByName(folderName);
+    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+    
+    var fileName = payload.section.replace(/[^a-zA-Z0-9]/g, "") + "_" + payload.rollNo + "_" + new Date().getTime() + ".jpg";
+    var imageBlob = Utilities.newBlob(
+      Utilities.base64Decode(payload.imageBase64.split(',')[1]), 
+      'image/jpeg', 
+      fileName
+    );
+    
+    var file = folder.createFile(imageBlob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    photoUrl = file.getUrl();
+  }
+
+  // Split Device Capture Time into Date, Day, and Time
+  var devDateObj = new Date(payload.deviceTime);
+  var devDateStr = Utilities.formatDate(devDateObj, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var devDayStr = Utilities.formatDate(devDateObj, Session.getScriptTimeZone(), "EEEE");
+  var devTimeStr = Utilities.formatDate(devDateObj, Session.getScriptTimeZone(), "HH:mm:ss");
+
+  var timeDiffText = "";
+  var statusOnTime = "", statusFined = "", statusLate = "", statusAbsent = "";
+  
+  // Evaluate Timetable Status FOR SIGN_IN ONLY
+  if (payload.eventType === "SIGN_IN") {
+    var evaluation = evaluateStudentStatus(payload, rosterSheet);
+    timeDiffText = evaluation.diffText;
+    statusOnTime = evaluation.onTime;
+    statusFined = evaluation.fined;
+    statusLate = evaluation.late;
+    statusAbsent = evaluation.absent;
+  } else if (payload.eventType === "AUTO_LOGOUT_ABSENT") {
+    statusAbsent = "Absent";
+  }
+
+  sheet.appendRow([
+    syncTimestamp,          // Col A: Server Sync Time
+    devDateStr,             // Col B: Device Date
+    devDayStr,              // Col C: Device Day
+    devTimeStr,             // Col D: Device Time
+    payload.eventType,      // Col E: Event Type
+    payload.rollNo,         // Col F: Roll No
+    payload.section,        // Col G: Section
+    payload.name,           // Col H: Student Name
+    payload.lat,            // Col I: Latitude
+    payload.lng,            // Col J: Longitude
+    payload.distanceMeters, // Col K: Distance (m)
+    photoUrl,               // Col L: Photo Drive Link
+    payload.deviceId,       // Col M: Device ID
+    timeDiffText,           // Col N: Late vs Schedule (Mins)
+    statusOnTime,           // Col O: On Time
+    statusFined,            // Col P: Fined
+    statusLate,             // Col Q: Late
+    statusAbsent            // Col R: Absent
+  ]);
+
+  return "SUCCESS";
+}
+
+function evaluateStudentStatus(payload, rosterSheet) {
+  var result = { diffText: "", onTime: "", fined: "", late: "", absent: "" };
+  if (!rosterSheet) return result;
+
+  var rosterData = rosterSheet.getDataRange().getValues();
+  var captureDate = Utilities.formatDate(new Date(payload.deviceTime), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var captureTimeObj = new Date(payload.deviceTime);
+
+  for (var i = 1; i < rosterData.length; i++) {
+    var sessDate = rosterData[i][6] instanceof Date ? Utilities.formatDate(rosterData[i][6], Session.getScriptTimeZone(), "yyyy-MM-dd") : rosterData[i][6];
+    var sessSec = rosterData[i][7] ? rosterData[i][7].toString().trim() : "";
+    var startTimeStr = rosterData[i][8] ? rosterData[i][8].toString().trim() : "";
+
+    if (sessDate === captureDate && sessSec.toLowerCase() === payload.section.toLowerCase() && startTimeStr) {
+      var parts = startTimeStr.split(":");
+      var startTimeObj = new Date(captureTimeObj.getTime());
+      startTimeObj.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), 0, 0);
+
+      var diffMins = Math.floor((captureTimeObj - startTimeObj) / 60000);
+      result.diffText = (diffMins > 0 ? "+" : "") + diffMins + " mins";
+
+      var fineMargin = 5;
+      var lateMargin = 7;
+      var absentMargin = 15;
+
+      if (diffMins <= fineMargin) {
+        result.onTime = "On Time";
+      } else if (diffMins > fineMargin && diffMins <= lateMargin) {
+        result.fined = "Fined";
+      } else if (diffMins > lateMargin && diffMins <= absentMargin) {
+        result.late = "Late";
+        result.fined = "Fined";
+      } else if (diffMins > absentMargin) {
+        result.absent = "Absent";
+      }
+      break;
+    }
+  }
+
+  if (!result.onTime && !result.fined && !result.late && !result.absent) {
+    result.onTime = "On Time";
+  }
+
+  return result;
+}
