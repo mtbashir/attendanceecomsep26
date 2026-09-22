@@ -154,20 +154,20 @@
     </div>
 
     <script>
-      // 1. CONFIGURE YOUR BACKEND WEB APP ENDPOINT HERE
-      var GAS_API_URL = "YOUR_GOOGLE_APPS_SCRIPT_EXEC_URL_HERE";
+      // ACTIVE GOOGLE APPS SCRIPT EXEC ENDPOINT
+      var GAS_API_URL = "https://script.google.com/macros/s/AKfycbwUqagUlQW4GA86m0eca6AJo6JS75Nh6wE4vi3nxR5sfzf0MGyXIBz7TnNtMBWOgJ_96w/exec";
 
-      // 2. MASTER GEOFENCE CONFIGURATION
+      // MASTER GEOFENCE CONFIGURATION
       var MASTER_LAT = 31.481083423505467;
       var MASTER_LNG = 74.30341703627447;
       var MAX_RADIUS_METERS = 100;
-      var PING_INTERVAL_MS = 120000; // 2 Minutes
+      var PING_INTERVAL_MS = 120000;
 
       var db, pingTimer = null;
       var outOfRangePingsCount = 0;
 
-      // Initialize IndexedDB
-      var request = indexedDB.open("OfflineAttendanceDB", 7);
+      // Initialize IndexedDB (Version 8)
+      var request = indexedDB.open("OfflineAttendanceDB", 8);
       request.onupgradeneeded = function(e) {
         db = e.target.result;
         if (!db.objectStoreNames.contains("queue")) db.createObjectStore("queue", { keyPath: "id", autoIncrement: true });
@@ -204,14 +204,14 @@
         initMasterData(true);
       }
 
-      // Fetch Roster using HTTP API (GitHub Compatible)
+      // Fetch Roster dynamically via API
       function initMasterData(isForced) {
         var cached = localStorage.getItem('app_master_roster');
         if (cached && !isForced) {
           applyMasterData(JSON.parse(cached));
         }
 
-        if (navigator.onLine && GAS_API_URL && GAS_API_URL !== "YOUR_GOOGLE_APPS_SCRIPT_EXEC_URL_HERE") {
+        if (navigator.onLine && GAS_API_URL) {
           fetch(GAS_API_URL + "?action=getRoster")
             .then(function(res) { return res.json(); })
             .then(function(data) {
@@ -616,9 +616,9 @@
         req.onsuccess = function() { document.getElementById('pendingCount').innerText = req.result; };
       }
 
-      // HTTP Sync Handler for GitHub Pages
+      // Sync offline records via POST to Google Apps Script
       function syncData() {
-        if (!db || !navigator.onLine || !GAS_API_URL || GAS_API_URL === "YOUR_GOOGLE_APPS_SCRIPT_EXEC_URL_HERE") return;
+        if (!db || !navigator.onLine || !GAS_API_URL) return;
         var tx = db.transaction("queue", "readonly");
         var req = tx.objectStore("queue").getAll();
         req.onsuccess = function() {
