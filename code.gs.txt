@@ -1,7 +1,27 @@
-function doGet() {
+function doGet(e) {
+  // If request contains action=getRoster, return JSON data for GitHub
+  if (e && e.parameter && e.parameter.action === "getRoster") {
+    var data = getRosterData();
+    return ContentService.createTextOutput(JSON.stringify(data))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Standard Apps Script rendering fallback
   return HtmlService.createHtmlOutputFromFile('Index')
-      .setTitle('Class Sign-In')
+      .setTitle('Offline Geo & Photo Attendance System')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function doPost(e) {
+  try {
+    var payload = JSON.parse(e.postData.contents);
+    var result = recordAttendance(payload);
+    return ContentService.createTextOutput(JSON.stringify({ status: result }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "ERROR: " + err.message }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
 }
 
 function getRosterData() {
@@ -26,7 +46,6 @@ function getRosterData() {
         namesSet[name] = true;
       }
 
-      // Read Timetable & Rules from Cols E:K (Indices 4 to 10)
       var sessionNo = data[i][4];
       if (sessionNo !== "" && sessionNo !== undefined) {
         var sessDate = data[i][6] instanceof Date ? Utilities.formatDate(data[i][6], Session.getScriptTimeZone(), "yyyy-MM-dd") : data[i][6];
@@ -79,7 +98,6 @@ function recordAttendance(payload) {
     photoUrl = file.getUrl();
   }
 
-  // Split Device Capture Time into Date, Day, and Time
   var devDateObj = new Date(payload.deviceTime);
   var devDateStr = Utilities.formatDate(devDateObj, Session.getScriptTimeZone(), "yyyy-MM-dd");
   var devDayStr = Utilities.formatDate(devDateObj, Session.getScriptTimeZone(), "EEEE");
@@ -88,7 +106,6 @@ function recordAttendance(payload) {
   var timeDiffText = "";
   var statusOnTime = "", statusFined = "", statusLate = "", statusAbsent = "";
   
-  // Evaluate Timetable Status FOR SIGN_IN ONLY
   if (payload.eventType === "SIGN_IN") {
     var evaluation = evaluateStudentStatus(payload, rosterSheet);
     timeDiffText = evaluation.diffText;
@@ -101,24 +118,10 @@ function recordAttendance(payload) {
   }
 
   sheet.appendRow([
-    syncTimestamp,          // Col A: Server Sync Time
-    devDateStr,             // Col B: Device Date
-    devDayStr,              // Col C: Device Day
-    devTimeStr,             // Col D: Device Time
-    payload.eventType,      // Col E: Event Type
-    payload.rollNo,         // Col F: Roll No
-    payload.section,        // Col G: Section
-    payload.name,           // Col H: Student Name
-    payload.lat,            // Col I: Latitude
-    payload.lng,            // Col J: Longitude
-    payload.distanceMeters, // Col K: Distance (m)
-    photoUrl,               // Col L: Photo Drive Link
-    payload.deviceId,       // Col M: Device ID
-    timeDiffText,           // Col N: Late vs Schedule (Mins)
-    statusOnTime,           // Col O: On Time
-    statusFined,            // Col P: Fined
-    statusLate,             // Col Q: Late
-    statusAbsent            // Col R: Absent
+    syncTimestamp, devDateStr, devDayStr, devTimeStr, payload.eventType,
+    payload.rollNo, payload.section, payload.name, payload.lat, payload.lng,
+    payload.distanceMeters, photoUrl, payload.deviceId, timeDiffText,
+    statusOnTime, statusFined, statusLate, statusAbsent
   ]);
 
   return "SUCCESS";
@@ -145,20 +148,10 @@ function evaluateStudentStatus(payload, rosterSheet) {
       var diffMins = Math.floor((captureTimeObj - startTimeObj) / 60000);
       result.diffText = (diffMins > 0 ? "+" : "") + diffMins + " mins";
 
-      var fineMargin = 5;
-      var lateMargin = 7;
-      var absentMargin = 15;
-
-      if (diffMins <= fineMargin) {
-        result.onTime = "On Time";
-      } else if (diffMins > fineMargin && diffMins <= lateMargin) {
-        result.fined = "Fined";
-      } else if (diffMins > lateMargin && diffMins <= absentMargin) {
-        result.late = "Late";
-        result.fined = "Fined";
-      } else if (diffMins > absentMargin) {
-        result.absent = "Absent";
-      }
+      if (diffMins <= 5) result.onTime = "On Time";
+      else if (diffMins > 5 && diffMins <= 7) result.fined = "Fined";
+      else if (diffMins > 7 && diffMins <= 15) { result.late = "Late"; result.fined = "Fined"; }
+      else if (diffMins > 15) result.absent = "Absent";
       break;
     }
   }
